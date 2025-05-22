@@ -1,0 +1,5 @@
+# blocked.yml  – bundle IDs you don’t want to appear in the capture
+blocked:
+  - com.tinyspeck.slackmacgap # Slack
+  - com.microsoft.Outlook
+  - com.apple.Notes

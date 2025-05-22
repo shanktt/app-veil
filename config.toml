@@ -1,0 +1,11 @@
+# ~/.myrecorder-veil.toml
+[veil]
+apps = [
+    "com.apple.MobileSMS",        # Messages
+    "Messages",
+    "com.agilebits.onepassword7",
+    "com.tinyspeck.slackmacgap",
+]
+border_color = "#A0A0A080" # 50 %-opaque gray
+border_dash = [6, 4] #  ╌╌╌ ╌╌╌
+fill_color = "#000000F0" # almost-black fill for the recording
