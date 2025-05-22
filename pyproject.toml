@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "pyobjc-framework-avfoundation>=11.0",
+    "pyobjc-framework-libdispatch>=11.0",
     "pyobjc-framework-quartz>=11.0",
     "pyobjc-framework-screencapturekit>=11.0",
 ]

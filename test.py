@@ -15,6 +15,7 @@ import tkinter as tk
 from pathlib import Path
 
 import CoreMedia
+import libdispatch  # <-- NEW
 import objc
 import ScreenCaptureKit as SCK
 from AVFoundation import (
@@ -50,7 +51,7 @@ class ScreenRecorder(
     _stream = objc.ivar()
     _writer = objc.ivar()
     _videoInput = objc.ivar()
-    _adaptor = objc.ivar()
+    # _adaptor = objc.ivar()
     _sessionBegan = objc.ivar()
 
     # -----------------------------------------------------------------------
@@ -96,6 +97,7 @@ class ScreenRecorder(
     #  Delegate callbacks
     # -----------------------------------------------------------------------
     def stream_didOutputSampleBuffer_ofOutputType_(self, _s, sbuf, otype):
+        print("frame")
         if otype != SCK.SCStreamOutputTypeScreen or not self.isRecording:
             return
 
@@ -215,8 +217,9 @@ class ScreenRecorder(
         self._stream = SCK.SCStream.alloc().initWithFilter_configuration_delegate_(
             filter_, cfg, self
         )
+        queue = libdispatch.dispatch_queue_create(b"ScreenStream", None)
         self._stream.addStreamOutput_type_sampleHandlerQueue_error_(
-            self, SCK.SCStreamOutputTypeScreen, None, None
+            self, SCK.SCStreamOutputTypeScreen, queue, None
         )
 
         if hasattr(self._stream, "startCaptureAndReturnError_"):  # macOS 14
