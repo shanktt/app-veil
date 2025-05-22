@@ -217,9 +217,13 @@ class ScreenRecorder(
         self._stream = SCK.SCStream.alloc().initWithFilter_configuration_delegate_(
             filter_, cfg, self
         )
-        queue = libdispatch.dispatch_queue_create(b"ScreenStream", None)
+        self._queue = libdispatch.dispatch_queue_create(b"ScreenStream", None)
+
         self._stream.addStreamOutput_type_sampleHandlerQueue_error_(
-            self, SCK.SCStreamOutputTypeScreen, queue, None
+            self,  # implements SCStreamOutput
+            SCK.SCStreamOutputTypeScreen,
+            self._queue,  # ← real dispatch_queue_t
+            None,
         )
 
         if hasattr(self._stream, "startCaptureAndReturnError_"):  # macOS 14
