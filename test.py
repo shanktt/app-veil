@@ -20,7 +20,6 @@ import ScreenCaptureKit as SCK
 from AVFoundation import (
     AVAssetWriter,
     AVAssetWriterInput,
-    AVAssetWriterInputPixelBufferAdaptor,
     AVVideoAverageBitRateKey,
     AVVideoCodecKey,
     AVVideoCodecTypeH264,
@@ -32,7 +31,6 @@ from AVFoundation import (
     AVVideoWidthKey,
 )
 from Foundation import NSURL, NSObject
-from Quartz import CoreVideo
 
 
 # ---------------------------------------------------------------------------
@@ -45,67 +43,60 @@ class ScreenRecorder(
         objc.protocolNamed("SCStreamDelegate"),
     ],
 ):
-    # Obj-C ivars ----------------------------------------------------------------
-    status = objc.ivar()  # NSString*  (we’ll store Python str)
-    isRecording = objc.ivar()  # NSNumber*  (Python bool)
+    # Obj-C ivars ------------------------------------------------------------
+    status = objc.ivar()
+    isRecording = objc.ivar()
 
-    _stream = objc.ivar()  # SCStream*
-    _writer = objc.ivar()  # AVAssetWriter*
-    _videoInput = objc.ivar()  # AVAssetWriterInput*
-    _adaptor = objc.ivar()  # AVAssetWriterInputPixelBufferAdaptor*
-    _sessionBegan = objc.ivar()  # NSNumber* / Python bool
+    _stream = objc.ivar()
+    _writer = objc.ivar()
+    _videoInput = objc.ivar()
+    _adaptor = objc.ivar()
+    _sessionBegan = objc.ivar()
 
-    # ---------------------------------------------------------------------------
-    #  Initialiser  (Objective-C’s init, *not* __init__)
-    # ---------------------------------------------------------------------------
+    # -----------------------------------------------------------------------
     def init(self):
         self = objc.super(ScreenRecorder, self).init()
         if self is None:
             return None
-
         self.status = "Idle"
         self.isRecording = False
         self._sessionBegan = False
         return self
 
-    # ---------------------------------------------------------------------------
-    #  Public selectors (called from Tkinter wrapper)
-    # ---------------------------------------------------------------------------
-    def start_(self, callback):
-        """Begin an asynchronous capture; `callback(err)` fires on finish/failure."""
+    # -----------------------------------------------------------------------
+    #  Public selectors (UI calls these)
+    # -----------------------------------------------------------------------
+    def start_(self, cb):
         if self.isRecording:
-            callback(None)
+            cb(None)
             return
 
         def work():
             try:
-                self._set_up_capture()
+                self._setup_capture()
                 self.isRecording = True
-                callback(None)
+                cb(None)
             except Exception as exc:
-                callback(exc)
+                cb(exc)
 
         threading.Thread(target=work, daemon=True).start()
 
-    def stop_(self, callback):
-        """Stop the capture; `callback(err)` fires when file is finalised."""
+    def stop_(self, cb):
         if not self.isRecording or self._stream is None:
-            callback(None)
+            cb(None)
             return
 
         def finish():
             self._videoInput.markAsFinished()
-            self._writer.finishWritingWithCompletionHandler_(
-                lambda: self._on_done(callback)
-            )
+            self._writer.finishWritingWithCompletionHandler_(lambda: self._on_done(cb))
 
         self._stream.stopCaptureWithCompletionHandler_(lambda _err: finish())
 
-    # ---------------------------------------------------------------------------
-    #  Objective-C delegate callbacks
-    # ---------------------------------------------------------------------------
-    def stream_didOutputSampleBuffer_ofOutputType_(self, _stream, sbuf, outputType):
-        if outputType != SCK.SCStreamOutputTypeScreen or not self.isRecording:
+    # -----------------------------------------------------------------------
+    #  Delegate callbacks
+    # -----------------------------------------------------------------------
+    def stream_didOutputSampleBuffer_ofOutputType_(self, _s, sbuf, otype):
+        if otype != SCK.SCStreamOutputTypeScreen or not self.isRecording:
             return
 
         pts = CoreMedia.CMSampleBufferGetPresentationTimeStamp(sbuf)
@@ -114,47 +105,43 @@ class ScreenRecorder(
             self._writer.startSessionAtSourceTime_(pts)
             self._sessionBegan = True
 
-        pixbuf = CoreMedia.CMSampleBufferGetImageBuffer(sbuf)
-        if pixbuf and self._videoInput.isReadyForMoreMediaData():
-            ok = self._adaptor.appendPixelBuffer_withPresentationTime_(pixbuf, pts)
+        # Append the *entire* sample buffer
+        if self._videoInput.isReadyForMoreMediaData():
+            ok = self._videoInput.appendSampleBuffer_(sbuf)
             if not ok and self._writer.error():
-                print("⚠️ adaptor append failed:", self._writer.error())
+                print("⚠️ append failed:", self._writer.error())
 
-    def stream_didStopWithError_(self, _stream, err):
+    def stream_didStopWithError_(self, _s, err):
         if err:
             print("Stream stopped with error:", err.localizedDescription())
 
-    # ---------------------------------------------------------------------------
-    #  Pure-Python helpers  (HIDDEN from Obj-C via @objc.python_method)
-    # ---------------------------------------------------------------------------
+    # -----------------------------------------------------------------------
+    #  Pure-Python helpers
+    # -----------------------------------------------------------------------
     @objc.python_method
-    def _set_up_capture(self):
-        # 1️⃣ discover display + build filter
+    def _setup_capture(self):
+        # 1️⃣  Shareable content (sync API on macOS 14, async on 13)
         try:
-            # macOS 14+  (sync API)
             content, err = (
-                SCK.SCShareableContent.shareableContentExcludingDesktopWindows_onScreenWindowsOnly_error_(  # type: ignore[attr-defined]
+                SCK.SCShareableContent.shareableContentExcludingDesktopWindows_onScreenWindowsOnly_error_(  # macOS 14
                     False, True, None
                 )
             )
         except AttributeError:
-            # macOS 13  (async API) – wrap in an Event so we can block
             done = threading.Event()
             box = {}
 
             def handler(c, e):
-                box["content"] = c
-                box["err"] = e
+                box["c"], box["e"] = c, e
                 done.set()
 
             (
-                SCK.SCShareableContent.getShareableContentExcludingDesktopWindows_onScreenWindowsOnly_completionHandler_(
+                SCK.SCShareableContent.getShareableContentExcludingDesktopWindows_onScreenWindowsOnly_completionHandler_(  # macOS 13
                     False, True, handler
                 )
             )
             done.wait()
-            content = box["content"]
-            err = box["err"]
+            content, err = box["c"], box["e"]
 
         if err or not content.displays():
             raise RuntimeError(
@@ -162,6 +149,8 @@ class ScreenRecorder(
             )
 
         display = content.displays()[0]
+
+        # 2️⃣  Content filter (API names differ)
         excluded = {"com.apple.MobileSMS", "com.apple.iChat"}
         included = [
             app
@@ -171,38 +160,28 @@ class ScreenRecorder(
 
         alloc = SCK.SCContentFilter.alloc()
         if hasattr(alloc, "initWithDisplay_includingApplications_exceptingWindows_"):
-            # macOS 13 / Ventura
             filter_ = alloc.initWithDisplay_includingApplications_exceptingWindows_(
                 display, included, None
             )
-        elif hasattr(alloc, "initWithDisplay_includingWindows_exceptingWindows_"):
-            # Rare transitional beta; very similar signature
-            filter_ = alloc.initWithDisplay_includingWindows_exceptingWindows_(
-                display, included, None
-            )
-        else:
-            # Fallback – capture the whole display, just exclude nothing
+        else:  # fallback – capture whole display
             filter_ = alloc.initWithDisplay_excludingWindows_(display, None)
 
-        # 2️⃣ stream configuration
+        # 3️⃣  Stream configuration
         cfg = SCK.SCStreamConfiguration.new()
-
-        width_val = int(display.width())  # plain Python ints
+        width_val = int(display.width())
         height_val = int(display.height())
-
-        # cfg.setWidth_(width_val)
-        # cfg.setHeight_(height_val)
+        cfg.setWidth_(width_val)
+        cfg.setHeight_(height_val)
         # cfg.pixelFormat = CoreVideo.kCVPixelFormatType_32BGRA
         # cfg.scalesToFit = False
 
-        # 3️⃣ output file URL
+        # 4️⃣  Writer + input
         movies = Path(".")
         movies.mkdir(exist_ok=True)
         stamp = datetime.datetime.now().isoformat(timespec="seconds").replace(":", "-")
-        url = movies / f"Screen-{stamp}.mov"
+        out = movies / f"Screen-{stamp}.mov"
 
-        # 4️⃣ asset writer + input
-        nsurl = NSURL.fileURLWithPath_(str(url))
+        nsurl = NSURL.fileURLWithPath_(str(out))
         self._writer, err = AVAssetWriter.alloc().initWithURL_fileType_error_(
             nsurl, "com.apple.quicktime-movie", None
         )
@@ -224,25 +203,15 @@ class ScreenRecorder(
             "vide", settings
         )
         self._videoInput.setExpectsMediaDataInRealTime_(True)
-
         if self._writer.canAddInput_(self._videoInput):
             self._writer.addInput_(self._videoInput)
         else:
             raise RuntimeError("Cannot add video input")
 
-        self._adaptor = AVAssetWriterInputPixelBufferAdaptor.alloc().initWithAssetWriterInput_sourcePixelBufferAttributes_(
-            self._videoInput,
-            {
-                CoreVideo.kCVPixelBufferPixelFormatTypeKey: cfg.pixelFormat,
-                CoreVideo.kCVPixelBufferWidthKey: cfg.width,
-                CoreVideo.kCVPixelBufferHeightKey: cfg.height,
-            },
-        )
-
         if not self._writer.startWriting():
-            raise RuntimeError(f"Writer error: {self._writer.error()}")
+            raise RuntimeError(self._writer.error())
 
-        # 5️⃣ ScreenCaptureKit stream
+        # 5️⃣  Build & start stream (sync on 14, async on 13)
         self._stream = SCK.SCStream.alloc().initWithFilter_configuration_delegate_(
             filter_, cfg, self
         )
@@ -250,21 +219,18 @@ class ScreenRecorder(
             self, SCK.SCStreamOutputTypeScreen, None, None
         )
 
-        # macOS 14 – synchronous API
-        if hasattr(self._stream, "startCaptureAndReturnError_"):
+        if hasattr(self._stream, "startCaptureAndReturnError_"):  # macOS 14
             ok, err = self._stream.startCaptureAndReturnError_(None)
             if not ok:
                 raise RuntimeError(
-                    err.localizedDescription() if err else "startCapture failed"
+                    err.localizedDescription() if err else "start failed"
                 )
-
-        # macOS 13 – asynchronous API
-        else:
+        else:  # macOS 13
             done = threading.Event()
             box = {}
 
-            def handler(err):
-                box["err"] = err
+            def handler(e):
+                box["err"] = e
                 done.set()
 
             self._stream.startCaptureWithCompletionHandler_(handler)
@@ -272,21 +238,15 @@ class ScreenRecorder(
             if box["err"]:
                 raise RuntimeError(box["err"].localizedDescription())
 
-        ok, err = self._stream.startCaptureAndReturnError_(None)
-        if not ok:
-            raise RuntimeError(
-                err.localizedDescription() if err else "startCapture failed"
-            )
-
-        self.status = f"Recording → {url.name}"
-        print("📹  Recording to", url)
+        self.status = f"Recording → {out.name}"
+        print("📹 Recording to", out)
 
     @objc.python_method
     def _on_done(self, cb):
         self.status = "Saved in Movies folder"
         self.isRecording = False
         self._sessionBegan = False
-        print("✅  File finalised")
+        print("✅ File finalised")
         cb(None)
 
 
